@@ -165,12 +165,16 @@ EOF
 Address = 10.7.0.$octet/24$(grep -q 'fddd:2c4:2c4:2c4::1' /etc/wireguard/wg0.conf && echo ", fddd:2c4:2c4:2c4::$octet/64")
 DNS = $dns
 PrivateKey = $key
+Table = off
+PreUp = source /etc/wireguard/wstunnel.sh && pre_up %i
+PostUp = source /etc/wireguard/wstunnel.sh && post_up %i
+PostDown = source /etc/wireguard/wstunnel.sh && post_down %i
 
 [Peer]
 PublicKey = $(grep PrivateKey /etc/wireguard/wg0.conf | cut -d " " -f 3 | wg pubkey)
 PresharedKey = $psk
 AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = $(grep '^# ENDPOINT' /etc/wireguard/wg0.conf | cut -d " " -f 3):$(grep ListenPort /etc/wireguard/wg0.conf | cut -d " " -f 3)
+Endpoint = 127.0.0.1:$(grep ListenPort /etc/wireguard/wg0.conf | cut -d " " -f 3)
 PersistentKeepalive = 25
 EOF
 }
@@ -201,7 +205,7 @@ if [[ ! -e /etc/wireguard/wg0.conf ]]; then
 		[[ -z "$ip_number" ]] && ip_number="1"
 		ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | sed -n "$ip_number"p)
 	fi
-	# If $ip is a private IP address, the server must be behind NAT
+	# If $ip is a private IP address, the server must be behind NAT
 	if echo "$ip" | grep -qE '^(10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|192\.168)'; then
 		echo
 		echo "This server is behind NAT. What is the public IPv4 address or hostname?"
@@ -389,8 +393,34 @@ Environment=WG_SUDO=1" > /etc/systemd/system/wg-quick@wg0.service.d/boringtun.co
 Address = 10.7.0.1/24$([[ -n "$ip6" ]] && echo ", fddd:2c4:2c4:2c4::1/64")
 PrivateKey = $(wg genkey)
 ListenPort = $port
-
+# next 2 lines added by assem for wstunnel
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
 EOF
+    ####################################
+    # WSTunnel implementation by Assem #
+    wget https://github.com/erebe/wstunnel/releases/download/v4.0/wstunnel-x64-linux
+    mv wstunnel-x64-linux /usr/local/bin/wstunnel
+    chmod uo+x /usr/local/bin/wstunnel
+    setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/wstunnel
+
+	cat << EOF > /etc/systemd/system/wstunnel.service
+[Unit]
+Description=Tunnel WireGuard UDP over websocket
+After=network.target
+
+[Service]
+Type=simple
+User=nobody
+ExecStart=/usr/local/bin/wstunnel -v --server wss://0.0.0.0:443 --restrictTo=127.0.0.1:51820
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable --now wstunnel
+    ####################################
+
 	chmod 600 /etc/wireguard/wg0.conf
 	# Enable net.ipv4.ip_forward for the system
 	echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-wireguard-forward.conf
@@ -495,6 +525,27 @@ EOF
 	qrencode -t UTF8 < ~/"$client.conf"
 	echo -e '\xE2\x86\x91 That is a QR code containing the client configuration.'
 	echo
+    echo "Save the next small script with anyname.sh"
+    echo "chmod +x anyname.sh"
+    echo "sudo ./anyname.sh"
+    echo "#!/bin/bash
+
+wget https://github.com/erebe/wstunnel/releases/download/v4.0/wstunnel-x64-linux
+sudo mv wstunnel-x64-linux /usr/local/bin/wstunnel
+sudo chmod +x /usr/local/bin/wstunnel
+wget https://raw.githubusercontent.com/assemator/wireguard-install/master/wstunnel.sh
+sudo mv wstunnel.sh /etc/wireguard/wstunnel.sh
+sudo chmod +x /etc/wireguard/wstunnel.sh
+
+
+
+
+	sudo cat << EOF > /etc/wireguard/wg0.wstunnel
+REMOTE_HOST=$(grep '^# ENDPOINT' /etc/wireguard/wg0.conf | cut -d " " -f 3)
+REMOTE_PORT=$(grep ListenPort /etc/wireguard/wg0.conf | cut -d " " -f 3)
+# Use the following line if you're connecting to your VPN server using a domain name.
+#UPDATE_HOSTS='/etc/hosts'
+EOF"
 	# If the kernel module didn't load, system probably had an outdated kernel
 	# We'll try to help, but will not will not force a kernel upgrade upon the user
 	if [[ ! "$is_container" -eq 0 ]] && ! modprobe -nq wireguard; then
@@ -549,6 +600,28 @@ else
 			echo -e '\xE2\x86\x91 That is a QR code containing your client configuration.'
 			echo
 			echo "$client added. Configuration available in:" ~/"$client.conf"
+            echo
+            echo "Save the next small script with anyname.sh"
+            echo "chmod +x anyname.sh"
+            echo "sudo ./anyname.sh"
+            echo "#!/bin/bash
+
+wget https://github.com/erebe/wstunnel/releases/download/v4.0/wstunnel-x64-linux
+sudo mv wstunnel-x64-linux /usr/local/bin/wstunnel
+sudo chmod +x /usr/local/bin/wstunnel
+wget https://raw.githubusercontent.com/assemator/wireguard-install/master/wstunnel.sh
+sudo mv wstunnel.sh /etc/wireguard/wstunnel.sh
+sudo chmod +x /etc/wireguard/wstunnel.sh
+
+
+
+
+	sudo cat << EOF > /etc/wireguard/wg0.wstunnel
+REMOTE_HOST=$(grep '^# ENDPOINT' /etc/wireguard/wg0.conf | cut -d " " -f 3)
+REMOTE_PORT=$(grep ListenPort /etc/wireguard/wg0.conf | cut -d " " -f 3)
+# Use the following line if you're connecting to your VPN server using a domain name.
+#UPDATE_HOSTS='/etc/hosts'
+EOF"
 			exit
 		;;
 		2)
